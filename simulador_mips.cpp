@@ -2,8 +2,19 @@
 
 using namespace std;
 
-uint32_t opcode,rs,rt,rd,shamt,funct,RI, K16, K26; 
+#define MEM_SIZE 4096
+#define WHITE     "\x1b[47m"
+#define CYAN     "\x1b[46m"
+#define RESET    "\x1b[0m"
 
+
+uint32_t opcode,rs,rt,rd,shamt,funct,RI; /* Segmentos das instrucoes */
+int32_t  K16, K26; 
+
+uint32_t mem[MEM_SIZE];
+uint32_t breg[32];
+uint32_t PC;
+uint32_t HI, LO;
 
 /*
 www.opencores.com
@@ -35,8 +46,7 @@ Formatos de Intrucoes:
     0 0 0
     
 */
-
-int two_complements(uint32_t numb, int bits){
+int32_t two_complements(int32_t numb, int bits){
     uint32_t mask_16 = 0x8000;
     uint32_t mask_26 = 0x2000000;
     uint32_t result = numb;
@@ -56,7 +66,7 @@ int two_complements(uint32_t numb, int bits){
             result = aux;
         }
     }
-    if(numb != 65535) return result*2;
+    if(numb != 65535 && numb < 0) return result*2;
     else return result;
 }
 
@@ -87,6 +97,10 @@ void print_intruc(){
     
 }
 
+void syscall(){
+    
+}
+
 void decode(){
     
     uint32_t mask_opcode_funct = 0x3F;
@@ -109,20 +123,243 @@ void decode(){
     K26 = two_complements(aux, 26);          /* Filtra imediato 26 bits */
 }
 
+void fetch(){
+    RI = mem[PC];
+    PC += 1; /* PC + 4 */
+}
+
+void execute(){
+    int32_t end;
+    int64_t aux_mult;
+    int64_t mask_HI_LO = 0x00000000FFFFFFFF;
+    
+    
+    switch (opcode) {
+        case 0x08: /* addi*/
+        printf("Entrei aqui\n");
+            breg[rt] = breg[rd] + K16;
+            break;
+            
+        case 0x0C: /* andi */
+            breg[rt] = breg[rs] & K16;    
+            break;
+        
+        case 0x04: /* beq */
+            if(rs == rt){
+                end = K16 >> 2;
+                PC = end;
+            }
+            break;
+            
+        case 0x05: /* bne */
+            if(rs != rt){
+                end = K16 >> 2;
+                PC = end;
+            }
+            break;
+            
+        case 0x02: /* J */
+            end = K26 >> 2;
+            PC = end;
+            break;
+            
+        case 0x03: /* jal */
+            breg[31] = PC + 1;
+            end = K26 >> 2;
+            PC = end;
+            break;
+            
+        case 0x0D: /* ori */
+            breg[rt] = breg[rs] | K16; 
+            break;
+            
+        case 0x23: /* lw */
+            end = breg[rs] + K16;
+            breg[rt] = mem[end >> 2];
+            break;
+            
+        default: /* ext */
+            break;
+    }
+    if(opcode == 0){
+        switch (funct) {
+            case 0x20: /* add */
+                breg[rd] = breg[rs] + breg[rt];
+                break;
+                
+            case 0x22: /* sub */
+                breg[rd] = breg[rs] - breg[rt];
+                break;
+                
+            case 0x18: /* mult */
+                aux_mult = (int64_t)breg[rs] * breg[rt];            
+                LO = aux_mult & mask_HI_LO;
+                aux_mult = aux_mult >> 32;
+                HI = aux_mult & mask_HI_LO;
+                break;
+            
+            case 0x24: /* and */
+                breg[rd] = breg[rs] & breg[rt];
+                break;
+                
+            case 0x25: /* or */
+                breg[rd] = breg[rs] | breg[rt];
+                break;
+                
+            case 0x26: /* xor */
+                breg[rd] = (~breg[rs] & ~breg[rt]);
+                break;
+            
+            case 0x27: /* nor */
+                breg[rd] = ~(breg[rs] | breg[rt]);
+                break;
+                
+            case 0x2A: /* slt */
+                if(breg[rs] < breg[rt]) breg[rd] = 1;
+                else 0;
+                break;
+            
+            case 0x08: /* jr */
+                PC = breg[rs] >> 2;
+                break;
+            
+            case 0x00: /* sll */
+                breg[rd] = breg[rt] << K16;
+                break;
+                
+            case 0x02: /* srl */
+                breg[rd] = breg[rt] >> K16;
+                break;
+                
+            case 0x03: /* sra */
+                break;
+                
+            case 0x0C:
+                syscall();
+                break;
+                
+            case 0x10:
+                breg[rd] = HI;
+                break;
+            
+            case 0x12:
+                breg[rd] = LO;
+                break;
+        }
+    }
+}
+
+void dump_reg(char format){
+    int cont_A = 0;
+    int cont_T = 0;
+    int cont_S = 0;  
+    
+    if(format == 'h'){
+        printf("  REGISTRADORES\n");
+        printf("==================\n");
+        printf(WHITE "|$zero|0x%08x|\n" RESET, breg[0]);
+        printf("|$at  |0x%08x|\n", breg[1]);
+        printf(WHITE "|$v0  |0x%08x|\n" RESET, breg[2]);
+        printf("|$v1  |0x%08x|\n", breg[3]);
+        for(int i = 4; i < 24; i++){
+            if (i < 8){
+                if(cont_A % 2 == 0)
+                    printf(WHITE "|$a%d  |0x%08x|\n" RESET, cont_A, breg[i]);
+                else 
+                    printf("|$a%d  |0x%08x|\n", cont_A, breg[i]);
+                cont_A++;
+            } else if(i < 16) {
+                if(cont_T % 2 ==0)
+                    printf(WHITE "|$t%d  |0x%08x|\n" RESET, cont_T, breg[i]);
+                else
+                    printf("|$t%d  |0x%08x|\n", cont_T, breg[i]);
+                cont_T++;
+            }  else {
+                if(cont_S % 2 == 0)
+                    printf(WHITE "|$s%d  |0x%08x|\n" RESET, cont_S, breg[i]);
+                else
+                    printf("|$s%d  |0x%08x|\n", cont_S, breg[i]);
+                cont_S++;
+            }
+        }
+        printf(WHITE "|$t8  |0x%08x|\n" RESET, breg[24]);
+        printf("|$t9  |0x%08x|\n", breg[25]);
+        printf(WHITE "|$k0  |0x%08x|\n" RESET, breg[26]);
+        printf("|$k1  |0x%08x|\n", breg[27]);
+        printf(WHITE "|$gp  |0x%08x|\n" RESET, breg[28]);
+        printf("|$sp  |0x%08x|\n", breg[29]);
+        printf(WHITE "|$fp  |0x%08x|\n" RESET, breg[30]);
+        printf("|$ra  |0x%08x|\n", breg[31]);
+        printf(WHITE "|pc   |0x%08x|\n" RESET, PC);
+        printf("|hi   |0x%08x|\n", HI);
+        printf(WHITE "|lo   |0x%08x|\n" RESET, LO);        
+        printf("==================\n");
+    }
+    
+    if(format == 'd'){
+        printf("==================\n");
+        printf(WHITE "|$zero|%10i|\n" RESET, breg[0]);
+        printf("|$at  |%10i|\n", breg[1]);
+        printf(WHITE "|$v0  |%10i|\n" RESET, breg[2]);
+        printf("|$v1  |%10i|\n", breg[3]);
+        for(int i = 4; i < 24; i++){
+            if (i < 8){
+                if(cont_A % 2 == 0)
+                    printf(WHITE "|$a%d  |%10i|\n" RESET, cont_A, breg[i]);
+                else 
+                    printf("|$a%d  |%10i|\n", cont_A, breg[i]);
+                cont_A++;
+            } else if(i < 16) {
+                if(cont_T % 2 ==0)
+                    printf(WHITE "|$t%d  |%10i|\n" RESET, cont_T, breg[i]);
+                else
+                    printf("|$t%d  |%10i|\n", cont_T, breg[i]);
+                cont_T++;
+            }  else {
+                if(cont_S % 2 == 0)
+                    printf(WHITE "|$s%d  |%10i|\n" RESET, cont_S, breg[i]);
+                else
+                    printf("|$s%d  |%10i|\n", cont_S, breg[i]);
+                
+                cont_S++;
+            }
+        }
+        printf(WHITE "|$t8  |%10i|\n" RESET, breg[24]);
+        printf("|$t9  |%10i|\n", breg[25]);
+        printf(WHITE "|$k0  |%10i|\n" RESET, breg[26]);
+        printf("|$k1  |%10i|\n", breg[27]);
+        printf(WHITE "|$gp  |%10i|\n" RESET, breg[28]);
+        printf("|$sp  |%10i|\n", breg[29]);
+        printf(WHITE "|$fp  |%10i|\n" RESET, breg[30]);
+        printf("|$ra  |%10i|\n", breg[31]);
+        printf(WHITE "|pc   |%10i|\n" RESET, PC);
+        printf("|hi   |%10i|\n", HI);
+        printf(WHITE "|lo   |%10i|\n" RESET, LO);        
+        printf("==================\n");
+    }
+}
+
+void dump_mem(){
+    
+}
+
+void run(){
+    fetch();
+    decode();
+    print_intruc();
+    getchar();
+    execute();
+}
+
 int main(){
-    uint32_t x = 64496;
-    RI = 0x01304020;                         /* add $t0, $t1, $s0 */
-    decode();
-    print_intruc();
-    getchar();
+    mem[0] = 0x01090018;
     
-    RI = 0x2128fffe;                         /* addi $t0, $t1, -2 */
-    decode();
-    print_intruc();
-    getchar();
+    PC = 0;
+    breg[0] = 0;
     
-    RI = 0x08000001;                         /* j FIM */
-    decode();
-    print_intruc();
-    getchar();
+    breg[8] = 200000;
+    breg[9] = 5000000;
+    run();
+    
+    dump_reg('d');
 }
