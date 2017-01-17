@@ -1,0 +1,12 @@
+--Trabalho simulador MIPS--
+Aluno:                Khalil Carsten Do Nascimento
+Compilador:           gcc 6.2.0 unbuntu
+Sistema operacional:  Unbuntu 16.10
+
+Dificuldades Encontradas: Principal problema foi ao executar as intruções de 
+comparação e efetuar o salto. Pelo fato de ser (endereço << 2) + 4. O programa
+retornava uma intrução antes da correta, isso ocasionava em um loop infinito.
+
+Questão 2: O Simulador me fez compreender de maneira mais detalhada os tipos de 
+instruções e como os saltos (que são a parte mais complicada) realmente funcionam.
+Incluindo a organização das memorias (.text) e a memória (.data).

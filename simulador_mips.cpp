@@ -3,10 +3,20 @@
 using namespace std;
 
 #define MEM_SIZE 4096
-#define WHITE     "\x1b[47m"
-#define CYAN     "\x1b[46m"
-#define RESET    "\x1b[0m"
+#define MEM_INTR 0
+#define MEM_DADO 2048
 
+#define WHITE_BACK     "\x1b[47m"
+#define BLACK_BACK     "\x1b[40m"
+#define WHITE          "\x1b[37m"
+#define BLACK          "\x1b[30m"
+#define RESET          "\x1b[0m"
+
+FILE *fp;
+
+bool flag_run = true;
+bool can_advance = true;
+int cont = 0;
 
 uint32_t opcode,rs,rt,rd,shamt,funct,RI; /* Segmentos das instrucoes */
 int32_t  K16, K26; 
@@ -16,69 +26,29 @@ uint32_t breg[32];
 uint32_t PC;
 uint32_t HI, LO;
 
-/*
-www.opencores.com
+enum OPCODES {
+    ADDI=0x08, ANDI=0x0C, BEQ=0x04, BNE=0x05, EXT=0x00, J=0x02, JAL=0x03,
+    LW=0x23, ORI=0x0D, SW=0x2B
+};
 
-Banco de Registradores:
-    int breg[32]
-    add $t0, $t1, $t2                               |-----------|
-    breg[t0] = breg[t1] + breg[t2]              PC->|    add    |
-                            RI = mem[PC]            |           |
-void fetch(); ->                                    |           |
-voide decode();                                     |           |
-voide execute();                                    |           |
-                                                    |           |
-                                                    |-----------|
-RI: Registrador de Instrucoes > variavel global
-PC: Program Counter           > Variavel global
+enum FUNCT {
+    ADD=0x20, SUB=0x22, MULT=0x18, AND=0x24, OR=0x25, XOR=0x26, NOR=0x27, SLT=0x2A,
+    JR=0x08, SLL=0x00, SRL=0x02, SRA=0x03, SYSCALL=0x0c, MFHI=0x10, MFLO=0x12
+};
 
-Formatos de Intrucoes:
-                6    5  5   5   5    6
-    tipo R-> |opcode|rs|rt|rd|shamt|funct|
-    tipo I-> |opcode|rs|rt|      k16     |
-    tipo J-> |opcode|         k26        |
-    
-    32767
-    
-    0 1 1
-    1 0 1
-    1 1 0
-    0 0 0
-    
-*/
-int32_t two_complements(int32_t numb, int bits){
+int32_t two_complements(uint32_t numb){
     uint32_t mask_16 = 0x8000;
     uint32_t mask_26 = 0x2000000;
     uint32_t result = numb;
     uint32_t aux;
     
-    if(bits == 16){
-        if(numb & mask_16){
-            aux = numb >> 1;
-            aux -= 32768;
-            result = aux;
-            printf("%d\n", result);
-        }
-    } else {
-        if(numb & mask_26){
-            aux = numb >> 1;
-            aux -= -33554432;
-            result = aux;
-        }
-    }
-    if(numb != 65535 && numb < 0) return result*2;
-    else return result;
-}
-
-void to_binario(uint32_t numb){
-    while(numb) {
-        if (numb & 1) {
-            printf("1");
-        } else {
-            printf("0");
-        }
-        numb >>= 1;
-    }
+    aux = numb >> 15;
+    if(aux & 1)
+        result = numb ^ 0xffff0000;
+    else
+        result = numb;
+    
+    return result;
 }
 
 void print_intruc(){
@@ -98,7 +68,7 @@ void print_intruc(){
 }
 
 void syscall(){
-    
+    if(breg[2] == 10) flag_run = false;
 }
 
 void decode(){
@@ -117,65 +87,75 @@ void decode(){
     funct = RI & mask_opcode_funct;          /* Filtra funct */
     
     aux = RI & mask_imediate_16;
-    K16 = two_complements(aux, 16);          /* Filtra imediato 16 bits */
+    K16 = two_complements(aux);          /* Filtra imediato 16 bits */
     
     aux = RI & mask_imediate_26;
-    K26 = two_complements(aux, 26);          /* Filtra imediato 26 bits */
+    K26 = two_complements(aux);          /* Filtra imediato 26 bits */
 }
 
 void fetch(){
-    RI = mem[PC];
-    PC += 1; /* PC + 4 */
+    RI = mem[PC/4];
 }
 
 void execute(){
-    int32_t end;
+    int32_t end = 0;
+    int32_t aux;
     int64_t aux_mult;
     int64_t mask_HI_LO = 0x00000000FFFFFFFF;
     
     
     switch (opcode) {
-        case 0x08: /* addi*/
-        printf("Entrei aqui\n");
-            breg[rt] = breg[rd] + K16;
+        case ADDI: /* addi */
+            breg[rt] = breg[rs] + K16;
+            PC += 4;
             break;
             
-        case 0x0C: /* andi */
-            breg[rt] = breg[rs] & K16;    
+        case ANDI: /* andi */
+            breg[rt] = breg[rs] & K16;
+            PC += 4;
             break;
         
-        case 0x04: /* beq */
-            if(rs == rt){
-                end = K16 >> 2;
-                PC = end;
-            }
+        case BEQ: /* beq */
+            if(breg[rs] == breg[rt]){
+                end = K16 << 2;
+                PC += end+4;
+            } else PC += 4;
             break;
             
-        case 0x05: /* bne */
-            if(rs != rt){
-                end = K16 >> 2;
-                PC = end;
-            }
+        case BNE: /* bne */
+            if(breg[rs] != breg[rt]){
+                end = K16 << 2;
+                printf("K16 = %d\n", K16);
+                PC += end+4;
+            } else PC += 4;
             break;
             
-        case 0x02: /* J */
-            end = K26 >> 2;
+        case J: /* J */
+            end = (PC & 0xF0000000) | (K26 << 2);
             PC = end;
             break;
             
-        case 0x03: /* jal */
-            breg[31] = PC + 1;
-            end = K26 >> 2;
+        case JAL: /* jal */
+            breg[31] = PC + 4;
+            end = (PC & 0xF0000000) | (K26 << 2);
             PC = end;
             break;
             
-        case 0x0D: /* ori */
-            breg[rt] = breg[rs] | K16; 
+        case ORI: /* ori */
+            breg[rt] = breg[rs] | K16;
+            PC += 4; 
             break;
             
-        case 0x23: /* lw */
+        case LW: /* lw */
             end = breg[rs] + K16;
-            breg[rt] = mem[end >> 2];
+            breg[rt] = mem[end/4];
+            PC += 4;
+            break;
+            
+        case SW: /* sw */
+            end = breg[rs] + K16;
+            mem[end/4] = breg[rt];
+            PC += 4;
             break;
             
         default: /* ext */
@@ -183,67 +163,83 @@ void execute(){
     }
     if(opcode == 0){
         switch (funct) {
-            case 0x20: /* add */
+            case ADD: /* add */
                 breg[rd] = breg[rs] + breg[rt];
+                PC += 4;
                 break;
                 
-            case 0x22: /* sub */
+            case SUB: /* sub */
                 breg[rd] = breg[rs] - breg[rt];
+                PC += 4;
                 break;
                 
-            case 0x18: /* mult */
-                aux_mult = (int64_t)breg[rs] * breg[rt];            
-                LO = aux_mult & mask_HI_LO;
+            case MULT: /* mult */
+                aux_mult = (int64_t)breg[rs] * breg[rt];
+                LO = (int32_t)aux_mult & mask_HI_LO;
                 aux_mult = aux_mult >> 32;
-                HI = aux_mult & mask_HI_LO;
+                HI = (int32_t)aux_mult & mask_HI_LO;
+                PC += 4;
                 break;
             
-            case 0x24: /* and */
+            case AND: /* and */
                 breg[rd] = breg[rs] & breg[rt];
+                PC += 4;
                 break;
                 
-            case 0x25: /* or */
+            case OR: /* or */
                 breg[rd] = breg[rs] | breg[rt];
+                PC += 4;
                 break;
                 
-            case 0x26: /* xor */
+            case XOR: /* xor */
                 breg[rd] = (~breg[rs] & ~breg[rt]);
+                PC += 4;
                 break;
             
-            case 0x27: /* nor */
+            case NOR: /* nor */
                 breg[rd] = ~(breg[rs] | breg[rt]);
+                PC += 4;
                 break;
                 
-            case 0x2A: /* slt */
+            case SLT: /* slt */
                 if(breg[rs] < breg[rt]) breg[rd] = 1;
-                else 0;
+                else breg[rd] = 0;
+                PC += 4;
                 break;
             
-            case 0x08: /* jr */
-                PC = breg[rs] >> 2;
+            case JR: /* jr */
+                PC = breg[rs];
                 break;
             
-            case 0x00: /* sll */
-                breg[rd] = breg[rt] << K16;
+            case SLL: /* sll */
+                breg[rd] = breg[rt] << shamt;
+                PC += 4;
                 break;
                 
-            case 0x02: /* srl */
-                breg[rd] = breg[rt] >> K16;
+            case SRL: /* srl */
+                breg[rd] = breg[rt] >> shamt;
+                PC += 4;
+
                 break;
                 
-            case 0x03: /* sra */
+            case SRA: /* sra */
+                breg[rd] = (int32_t)breg[rt] >> shamt;
+                PC += 4;
                 break;
                 
-            case 0x0C:
+            case SYSCALL:
                 syscall();
+                PC += 4;
                 break;
                 
-            case 0x10:
+            case MFHI: /* MFHI */
                 breg[rd] = HI;
+                PC += 4;
                 break;
             
-            case 0x12:
+            case MFLO: /* MFLO */
                 breg[rd] = LO;
+                PC += 4;
                 break;
         }
     }
@@ -257,109 +253,160 @@ void dump_reg(char format){
     if(format == 'h'){
         printf("  REGISTRADORES\n");
         printf("==================\n");
-        printf(WHITE "|$zero|0x%08x|\n" RESET, breg[0]);
+        printf(WHITE_BACK "|$zero|0x%08x|\n" RESET, breg[0]);
         printf("|$at  |0x%08x|\n", breg[1]);
-        printf(WHITE "|$v0  |0x%08x|\n" RESET, breg[2]);
+        printf(WHITE_BACK "|$v0  |0x%08x|\n" RESET, breg[2]);
         printf("|$v1  |0x%08x|\n", breg[3]);
         for(int i = 4; i < 24; i++){
             if (i < 8){
                 if(cont_A % 2 == 0)
-                    printf(WHITE "|$a%d  |0x%08x|\n" RESET, cont_A, breg[i]);
+                    printf(WHITE_BACK "|$a%d  |0x%08x|\n" RESET, cont_A, breg[i]);
                 else 
                     printf("|$a%d  |0x%08x|\n", cont_A, breg[i]);
                 cont_A++;
             } else if(i < 16) {
                 if(cont_T % 2 ==0)
-                    printf(WHITE "|$t%d  |0x%08x|\n" RESET, cont_T, breg[i]);
+                    printf(WHITE_BACK "|$t%d  |0x%08x|\n" RESET, cont_T, breg[i]);
                 else
                     printf("|$t%d  |0x%08x|\n", cont_T, breg[i]);
                 cont_T++;
             }  else {
                 if(cont_S % 2 == 0)
-                    printf(WHITE "|$s%d  |0x%08x|\n" RESET, cont_S, breg[i]);
+                    printf(WHITE_BACK "|$s%d  |0x%08x|\n" RESET, cont_S, breg[i]);
                 else
                     printf("|$s%d  |0x%08x|\n", cont_S, breg[i]);
                 cont_S++;
             }
         }
-        printf(WHITE "|$t8  |0x%08x|\n" RESET, breg[24]);
+        printf(WHITE_BACK "|$t8  |0x%08x|\n" RESET, breg[24]);
         printf("|$t9  |0x%08x|\n", breg[25]);
-        printf(WHITE "|$k0  |0x%08x|\n" RESET, breg[26]);
+        printf(WHITE_BACK "|$k0  |0x%08x|\n" RESET, breg[26]);
         printf("|$k1  |0x%08x|\n", breg[27]);
-        printf(WHITE "|$gp  |0x%08x|\n" RESET, breg[28]);
+        printf(WHITE_BACK "|$gp  |0x%08x|\n" RESET, breg[28]);
         printf("|$sp  |0x%08x|\n", breg[29]);
-        printf(WHITE "|$fp  |0x%08x|\n" RESET, breg[30]);
+        printf(WHITE_BACK "|$fp  |0x%08x|\n" RESET, breg[30]);
         printf("|$ra  |0x%08x|\n", breg[31]);
-        printf(WHITE "|pc   |0x%08x|\n" RESET, PC);
+        printf(WHITE_BACK "|pc   |0x%08x|\n" RESET, PC);
         printf("|hi   |0x%08x|\n", HI);
-        printf(WHITE "|lo   |0x%08x|\n" RESET, LO);        
+        printf(WHITE_BACK "|lo   |0x%08x|\n" RESET, LO);        
         printf("==================\n");
     }
     
     if(format == 'd'){
         printf("==================\n");
-        printf(WHITE "|$zero|%10i|\n" RESET, breg[0]);
+        printf(WHITE_BACK "|$zero|%10i|\n" RESET, breg[0]);
         printf("|$at  |%10i|\n", breg[1]);
-        printf(WHITE "|$v0  |%10i|\n" RESET, breg[2]);
+        printf(WHITE_BACK "|$v0  |%10i|\n" RESET, breg[2]);
         printf("|$v1  |%10i|\n", breg[3]);
         for(int i = 4; i < 24; i++){
             if (i < 8){
                 if(cont_A % 2 == 0)
-                    printf(WHITE "|$a%d  |%10i|\n" RESET, cont_A, breg[i]);
+                    printf(WHITE_BACK "|$a%d  |%10i|\n" RESET, cont_A, breg[i]);
                 else 
                     printf("|$a%d  |%10i|\n", cont_A, breg[i]);
                 cont_A++;
             } else if(i < 16) {
                 if(cont_T % 2 ==0)
-                    printf(WHITE "|$t%d  |%10i|\n" RESET, cont_T, breg[i]);
+                    printf(WHITE_BACK "|$t%d  |%10i|\n" RESET, cont_T, breg[i]);
                 else
                     printf("|$t%d  |%10i|\n", cont_T, breg[i]);
                 cont_T++;
             }  else {
                 if(cont_S % 2 == 0)
-                    printf(WHITE "|$s%d  |%10i|\n" RESET, cont_S, breg[i]);
+                    printf(WHITE_BACK "|$s%d  |%10i|\n" RESET, cont_S, breg[i]);
                 else
                     printf("|$s%d  |%10i|\n", cont_S, breg[i]);
                 
                 cont_S++;
             }
         }
-        printf(WHITE "|$t8  |%10i|\n" RESET, breg[24]);
+        printf(WHITE_BACK "|$t8  |%10i|\n" RESET, breg[24]);
         printf("|$t9  |%10i|\n", breg[25]);
-        printf(WHITE "|$k0  |%10i|\n" RESET, breg[26]);
+        printf(WHITE_BACK "|$k0  |%10i|\n" RESET, breg[26]);
         printf("|$k1  |%10i|\n", breg[27]);
-        printf(WHITE "|$gp  |%10i|\n" RESET, breg[28]);
+        printf(WHITE_BACK "|$gp  |%10i|\n" RESET, breg[28]);
         printf("|$sp  |%10i|\n", breg[29]);
-        printf(WHITE "|$fp  |%10i|\n" RESET, breg[30]);
+        printf(WHITE_BACK "|$fp  |%10i|\n" RESET, breg[30]);
         printf("|$ra  |%10i|\n", breg[31]);
-        printf(WHITE "|pc   |%10i|\n" RESET, PC);
+        printf(WHITE_BACK "|pc   |%10i|\n" RESET, PC);
         printf("|hi   |%10i|\n", HI);
-        printf(WHITE "|lo   |%10i|\n" RESET, LO);        
+        printf(WHITE_BACK "|lo   |%10i|\n" RESET, LO);        
         printf("==================\n");
     }
 }
 
-void dump_mem(){
-    
+void dump_mem(int start, int end, char format){
+    printf("\n==================================================\n");
+    if(format == 'h'){
+        for (int i = start; i <= end; i++){
+            printf("|MEM[%4i] | 0x%08x|+", i, mem[i]);
+            if(i % 2 == 1) printf("\n");
+        }
+    } else {
+        for (int i = start; i <= end; i++){
+            printf("|MEM[%4i] | %10i|+", i, mem[i]);
+            if(i % 2 == 1) printf("\n");
+        }
+    }
+    printf("\n==================================================\n");
 }
 
-void run(){
+void step(){
     fetch();
     decode();
     print_intruc();
-    getchar();
     execute();
 }
 
-int main(){
-    mem[0] = 0x01090018;
+void run(){
+    while(flag_run){
+        step();
+    }
+}
+
+void read_bin(){
+    uint32_t result;
+    int i = 0;
     
+    fp = fopen("data.bin", "rb");
+    
+    if(fp == NULL){ 
+        printf("Nao existe tal arquivo\n");
+        getchar();
+    } else {
+        while(fread(&result, sizeof(uint32_t), 1, fp) == 1){
+            mem[MEM_DADO + i] = result;
+            i++;
+        }
+    }
+    
+    fclose(fp);
+    
+    fp = fopen("text.bin", "rb");
+    
+    if(fp == NULL){ 
+        printf("Nao existe tal arquivo\n");
+        getchar();
+    } else {    
+        i = 0;
+        while(fread(&result, sizeof(uint32_t), 1, fp) == 1){
+            mem[MEM_INTR + i] = result;
+            i++;
+            cont++;
+        }    
+    }
+    
+    fclose(fp);
+}
+
+int main(){
     PC = 0;
     breg[0] = 0;
     
-    breg[8] = 200000;
-    breg[9] = 5000000;
-    run();
+    read_bin();
     
+    run();
     dump_reg('d');
+    dump_mem(0, 40, 'h');
+    dump_mem(2048, 2055, 'd');
 }
